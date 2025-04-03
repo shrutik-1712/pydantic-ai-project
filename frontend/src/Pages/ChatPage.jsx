@@ -19,14 +19,56 @@ function ChatPage() {
       return;
     }
     
-    // Add a welcome message with the URL data
+    // Add a welcome message with URL data and start auto-analysis
     setMessages([
       {
         role: 'system',
         content: `Chat initialized with URL: ${urlData.url || 'Unknown URL'}`,
       },
     ]);
+    
+    // Auto-analyze the URL when first loading
+    handleAutoAnalyze(urlData);
   }, [location.state, navigate]);
+
+  // Auto-analyze the URL
+  const handleAutoAnalyze = async (urlData) => {
+    if (isLoading) return;
+    
+    setIsLoading(true);
+    
+    try {
+      const response = await fetch('http://127.0.0.1:3000/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: 'Analyze this website' }],
+          url_data: urlData,
+        }),
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to analyze URL');
+      }
+      
+      const data = await response.json();
+      
+      // Add analysis response
+      setMessages(prev => [
+        ...prev,
+        { role: 'model', content: data.message }
+      ]);
+    } catch (err) {
+      setMessages(prev => [
+        ...prev,
+        { role: 'system', content: 'Error: Failed to analyze URL' },
+      ]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   // Auto-scroll to the bottom of the chat
   useEffect(() => {
@@ -47,13 +89,14 @@ function ChatPage() {
     
     try {
       // Make API call to your LLM backend
-      const response = await fetch('/api/chat', {
+      const response = await fetch('http://127.0.0.1:3000/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           messages: [...messages, userMessage],
+          url_data: location.state?.urlData,
         }),
       });
       
@@ -64,7 +107,7 @@ function ChatPage() {
       const data = await response.json();
       
       // Add assistant's response to the chat
-      setMessages(prev => [...prev, { role: 'assistant', content: data.message }]);
+      setMessages(prev => [...prev, { role: 'model', content: data.message }]);
     } catch (err) {
       // Add error message
       setMessages(prev => [
@@ -85,12 +128,12 @@ function ChatPage() {
       {/* Header */}
       <header className="bg-blue-600 text-white p-4 shadow-md">
         <div className="flex justify-between items-center max-w-5xl mx-auto">
-          <h1 className="text-xl font-bold">LLM Chat</h1>
+          <h1 className="text-xl font-bold">URL Analyzer</h1>
           <button
             onClick={handleReset}
             className="px-4 py-1 bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors duration-300"
           >
-            Reset
+            New URL
           </button>
         </div>
       </header>
@@ -101,12 +144,12 @@ function ChatPage() {
           {messages.map((msg, index) => (
             <div
               key={index}
-              className={`p-3 rounded-lg max-w-[80%] ${
+              className={`p-3 rounded-lg ${
                 msg.role === 'user'
-                  ? 'bg-blue-500 text-white ml-auto'
+                  ? 'bg-blue-500 text-white ml-auto max-w-[80%]'
                   : msg.role === 'system'
                   ? 'bg-gray-300 text-gray-800 mx-auto text-center'
-                  : 'bg-gray-200 text-gray-800'
+                  : 'bg-white text-gray-800 border border-gray-200 whitespace-pre-line'
               }`}
             >
               {msg.content}
@@ -132,7 +175,7 @@ function ChatPage() {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Type your message..."
+            placeholder="Ask about this website..."
             className="flex-1 px-4 py-2 border border-gray-300 rounded-l-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             disabled={isLoading}
           />

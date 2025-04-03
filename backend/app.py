@@ -2,28 +2,41 @@ from flask import Flask, request, jsonify, Response, stream_with_context
 import json
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Literal
-from contextlib import asynccontextmanager
 import asyncio
 import logging
 from pydantic import BaseModel, Field
-GoogleGLAProvider(api_key=...)
+
 # Import Pydantic AI with Gemini
 from pydantic_ai import Agent
 from pydantic_ai.models.gemini import GeminiModel
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.providers.google_gla import GoogleGLAProvider
 
+from flask_cors import CORS
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize the Gemini model and agent
-model = GeminiModel('gemini-2.0-flash', provider='google-gla')
+# Define structured output model
+class WebsiteInfo(BaseModel):
+    url: str
+    title: Optional[str] = None
+    main_topic: Optional[str] = None
+    summary: str = Field(..., description="A brief summary of the website content")
+    key_points: List[str] = Field(..., description="Main points extracted from the website")
+
+# Initialize the Gemini model and agent - keeping the original structure
+model = GeminiModel(
+    'gemini-1.5-flash', provider=GoogleGLAProvider(api_key='AIzaSyDo88VXyuDtTIP95TPF8J3WINj957dGvOM')
+)
 agent = Agent(
     model,
-    system_prompt="You are an assistant that analyzes URLs and their content. Use the context provided to give helpful responses."
+    system_prompt="You are an assistant that analyzes URLs and their content. Provide structured analysis of websites.",
+    result_type=WebsiteInfo
 )
 
 app = Flask(__name__)
+CORS(app)
 
 # Pydantic models for request/response validation
 class Message(BaseModel):
@@ -123,7 +136,7 @@ def chat():
         logger.info(f"Received chat request with {len(messages)} messages")
         
         # Create a prompt that includes URL context if available
-        prompt = messages[-1]['content'] if messages else "Hello"
+        prompt = messages[-1]['content'] if messages else "Analyze this website"
         
         # Prepare context from URL data
         context = ""
@@ -146,85 +159,31 @@ def chat():
         # Run in synchronous mode for simplicity
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(agent.run(prompt, message_history=history))
-        response_text = result.text()
         
-        return jsonify({'message': response_text})
+        # Use the agent with structured output
+        result = loop.run_until_complete(agent.run(prompt, message_history=history))
+        
+        # Get the structured data and format it
+        website_info = result.data
+        formatted_response = f"""**Website Analysis**
+
+**URL**: {website_info.url}
+
+**Title**: {website_info.title or 'Not available'}
+
+**Summary**: {website_info.summary}
+
+**Key Points**:
+{chr(10).join([f"- {point}" for point in website_info.key_points])}
+
+**Main Topic**: {website_info.main_topic or 'Not specified'}
+"""
+        
+        return jsonify({'message': formatted_response})
         
     except Exception as e:
         logger.error(f"Error in chat endpoint: {str(e)}")
         return jsonify({'error': f"Failed to get AI response: {str(e)}"}), 500
-
-@app.route('/api/chat/stream', methods=['POST'])
-def chat_stream():
-    """Streaming version of the chat endpoint."""
-    try:
-        data = request.get_json()
-        messages = data.get('messages', [])
-        url_data = data.get('url_data')
-        
-        prompt = messages[-1]['content'] if messages else "Hello"
-        
-        # Prepare context from URL data
-        context = ""
-        if url_data:
-            context = f"""
-            URL: {url_data.get('url', 'Unknown')}
-            Content Type: {url_data.get('content_type', 'Unknown')}
-            Content Preview: {url_data.get('content_preview', 'No preview available')}
-            """
-            prompt = f"Context: {context}\n\nUser question: {prompt}"
-        
-        # Convert previous messages
-        history = []
-        for msg in messages[:-1]:
-            if msg['role'] == 'user':
-                history.append(ModelRequest(parts=[UserPromptPart(msg['content'])]))
-            elif msg['role'] == 'model':
-                history.append(ModelResponse(parts=[TextPart(msg['content'])]))
-        
-        # Create a generator for streaming
-        def generate():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            async def stream_response():
-                async with agent.run_stream(prompt, message_history=history) as result:
-                    async for text in result.stream(debounce_by=0.1):
-                        message = {
-                            'role': 'model',
-                            'timestamp': datetime.now(tz=timezone.utc).isoformat(),
-                            'content': text,
-                            'done': False
-                        }
-                        yield f"data: {json.dumps(message)}\n\n"
-                    
-                    # Send final message to indicate completion
-                    final_message = {
-                        'role': 'model',
-                        'timestamp': datetime.now(tz=timezone.utc).isoformat(),
-                        'content': result.text(),
-                        'done': True
-                    }
-                    yield f"data: {json.dumps(final_message)}\n\n"
-            
-            # Run the asynchronous generator in the event loop
-            for chunk in loop.run_until_complete(collect_chunks(stream_response())):
-                yield chunk
-        
-        return Response(stream_with_context(generate()), mimetype='text/event-stream')
-        
-    except Exception as e:
-        logger.error(f"Error in chat streaming endpoint: {str(e)}")
-        error_message = {'error': f"Failed to stream AI response: {str(e)}"}
-        return Response(f"data: {json.dumps(error_message)}\n\n", mimetype='text/event-stream')
-
-async def collect_chunks(generator):
-    """Helper to collect chunks from an async generator."""
-    chunks = []
-    async for chunk in generator:
-        chunks.append(chunk)
-    return chunks
 
 if __name__ == '__main__':
     logger.info("Starting Flask API server...")
