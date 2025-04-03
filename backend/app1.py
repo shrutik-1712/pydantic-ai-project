@@ -5,20 +5,19 @@ from typing import List, Dict, Any, Optional, Literal
 import asyncio
 import logging
 from pydantic import BaseModel, Field
-from scrape import scrape_portfolio_html
-from beautifulsoup4 import scrape_webpage
 # Import Pydantic AI with Gemini
 from pydantic_ai import Agent
 from pydantic_ai.models.gemini import GeminiModel
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.providers.google_gla import GoogleGLAProvider
-
+from scrape import scrape_portfolio_html
+from beautifulsoup4 import scrape_webpage
 from flask_cors import CORS
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Define structured output model
+# Define structured output models
 class WebsiteInfo(BaseModel):
     url: str
     title: Optional[str] = None
@@ -26,7 +25,14 @@ class WebsiteInfo(BaseModel):
     summary: str = Field(..., description="A brief summary of the website content")
     key_points: List[str] = Field(..., description="Main points extracted from the website")
 
-# Initialize the Gemini model and agent - keeping the original structure
+class ScrapedContent(BaseModel):
+    title: Optional[str] = None
+    main_content: str = Field(..., description="The main textual content from the webpage")
+    headings: List[str] = Field(default_factory=list, description="Important headings from the page")
+    links: List[str] = Field(default_factory=list, description="Important links found on the page")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Any additional metadata")
+
+# Initialize the Gemini models and agents
 model = GeminiModel(
     'gemini-1.5-flash', provider=GoogleGLAProvider(api_key='AIzaSyDo88VXyuDtTIP95TPF8J3WINj957dGvOM')
 )
@@ -34,6 +40,16 @@ agent = Agent(
     model,
     system_prompt="You are an assistant that analyzes URLs and their content. Provide structured analysis of websites.",
     result_type=WebsiteInfo
+)
+
+# Add specialized scraping agent
+scraping_model = GeminiModel(
+    'gemini-1.5-flash', provider=GoogleGLAProvider(api_key='AIzaSyDo88VXyuDtTIP95TPF8J3WINj957dGvOM')
+)
+scraping_agent = Agent(
+    scraping_model,
+    system_prompt="You are a specialized web scraping assistant. Extract and organize the most important content from HTML.",
+    result_type=ScrapedContent
 )
 
 app = Flask(__name__)
@@ -74,6 +90,26 @@ def to_chat_message(m: ModelMessage) -> Dict[str, Any]:
         'timestamp': datetime.now(tz=timezone.utc).isoformat(),
         'content': 'Unexpected message format',
     }
+
+# Function to process HTML with the scraping agent
+async def process_html_with_agent(url: str, html_content: str) -> ScrapedContent:
+    """Process HTML content using the specialized scraping agent"""
+    prompt = f"""
+    Analyze this HTML content from the URL: {url}
+    
+    Extract the most important information including:
+    - Page title
+    - Main content
+    - Important headings
+    - Relevant links
+    - Any metadata
+    
+    HTML content preview:
+    {html_content[:10000]}... (truncated)
+    """
+    
+    result = await scraping_agent.run(prompt)
+    return result.data
 
 # Function to analyze the website with the agent
 async def analyze_website(url: str, scraped_data: Dict[str, Any]) -> WebsiteInfo:
@@ -116,35 +152,34 @@ def process_url():
             import requests
             response = requests.get(url, timeout=10)
             response.raise_for_status()
-            
-            # Scrape the HTML using your custom functions
             scraped_data = scrape_portfolio_html(url)
+            print(scraped_data)
             processed_data = scrape_webpage(scraped_data)
+            # Get the raw HTML content
+            html_content = scraped_data
             
-            # Log successful scraping
-            logger.info(f"Successfully scraped URL: {url}")
-            
-            # Use the AI agent to analyze the website
+            # Use the scraping agent to process the HTML
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
-            # Run analysis
-            website_info = loop.run_until_complete(analyze_website(url, processed_data))
+            # Process HTML with the scraping agent
+            scraped_content = loop.run_until_complete(process_html_with_agent(url, html_content))
+            logger.info(f"Successfully processed HTML for URL: {url}")
+            
+            # Use the main agent to analyze the processed data
+            website_info = loop.run_until_complete(analyze_website(url, scraped_content.model_dump()))
+            logger.info(f"Successfully analyzed website: {url}")
             
             # Format the analysis response
             formatted_analysis = {
                 'url': url,
-                'title': website_info.title,
-                'main_topic': website_info.main_topic,
-                'summary': website_info.summary,
-                'key_points': website_info.key_points,
-                'raw_data': processed_data  # Include the raw scraped data for reference
+                'scraped_content': scraped_content.model_dump(),  # Include the scraped content
+                'website_info': website_info.model_dump()
             }
             
-            # Return both the analysis and raw data
+            # Return the complete analysis
             return jsonify({
-                'analysis': formatted_analysis,
-                'scraped_data': processed_data
+                'analysis': formatted_analysis
             })
             
         except Exception as e:
@@ -176,17 +211,21 @@ def chat():
         
         # Prepare context from analysis data
         context = ""
-        if analysis:
+        if analysis and analysis.get('website_info'):
+            website_info = analysis.get('website_info')
             context = f"""
             Website Information:
-            URL: {analysis.get('url', 'Unknown')}
-            Title: {analysis.get('title', 'Unknown')}
-            Main Topic: {analysis.get('main_topic', 'Unknown')}
+            URL: {website_info.get('url', 'Unknown')}
+            Title: {website_info.get('title', 'Unknown')}
+            Main Topic: {website_info.get('main_topic', 'Unknown')}
             
-            Summary: {analysis.get('summary', 'No summary available')}
+            Summary: {website_info.get('summary', 'No summary available')}
             
             Key Points:
-            {chr(10).join([f"- {point}" for point in analysis.get('key_points', ['No key points available'])])}
+            {chr(10).join([f"- {point}" for point in website_info.get('key_points', ['No key points available'])])}
+            
+            Additional Scraped Content:
+            {json.dumps(analysis.get('scraped_content', {}), indent=2)}
             """
             prompt = f"Context: {context}\n\nUser question: {prompt}"
         
@@ -206,7 +245,11 @@ def chat():
         result = loop.run_until_complete(agent.run(prompt, message_history=history))
         
         # Format the response as needed for the chat
-        response_content = result.data.summary if hasattr(result.data, 'summary') else str(result.data)
+        response_content = ""
+        if hasattr(result.data, 'summary'):
+            response_content = result.data.summary
+        else:
+            response_content = str(result.data)
         
         return jsonify({'message': response_content})
         

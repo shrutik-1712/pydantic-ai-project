@@ -1,30 +1,29 @@
 import requests
 from bs4 import BeautifulSoup
+import json
 
-# Send a GET request to the webpage
-url = "https://portfolio-jytw.vercel.app/"
-response = requests.get(url)
+def scrape_webpage(url):
+    """
+    Scrape the given webpage and return a JSON object containing the extracted data.
+    
+    Args:
+        url (str): The URL of the webpage to scrape.
+    
+    Returns:
+        dict: A dictionary containing the extracted data.
+    """
+    try:
+        response = requests.get(url)
+        response.raise_for_status()  # Raise an exception for HTTP errors
+    except requests.exceptions.RequestException as e:
+        return {"error": f"Failed to retrieve the webpage: {e}"}
 
-# Check if the request was successful
-if response.status_code != 200:
-    print(f"Failed to retrieve the webpage. Status code: {response.status_code}")
-    exit(1)
+    soup = BeautifulSoup(response.text, 'html.parser')
 
-# Parse the HTML content of the webpage using BeautifulSoup
-soup = BeautifulSoup(response.text, 'html.parser')
+    data = {
+        "paragraphs": [paragraph.text for paragraph in soup.find_all('p')],
+        "links": [link.get('href') for link in soup.find_all('a')],
+        "images": [image.get('src') for image in soup.find_all('img')]
+    }
 
-# Now you can use BeautifulSoup methods to navigate and search the HTML content
-# For example, to find all paragraph elements:
-paragraphs = soup.find_all('p')
-for paragraph in paragraphs:
-    print(paragraph.text)
-
-# To find all links:
-links = soup.find_all('a')
-for link in links:
-    print(link.get('href'))
-
-# To find all images:
-images = soup.find_all('img')
-for image in images:
-    print(image.get('src'))
+    return data
