@@ -44,7 +44,7 @@ This project combines web scraping with AI analysis to extract meaningful insigh
 1. Clone the repository
 ```bash
 git clone <repository-url>
-cd portfolio-analyzer
+cd pydantic-ai-project
 ```
 
 2. Install backend dependencies
