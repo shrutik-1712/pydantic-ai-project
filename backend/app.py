@@ -29,7 +29,7 @@ class WebsiteInfo(BaseModel):
 
 # Initialize the Gemini model and agent - keeping the original structure
 model = GeminiModel(
-    'gemini-2.0-flash', provider=GoogleGLAProvider(api_key='AIzaSyDo88VXyuDtTIP95TPF8J3WINj957dGvOM')
+    'gemini-2.0-flash', provider=GoogleGLAProvider(api_key='')
 )
 agent = Agent(
     model,
